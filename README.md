@@ -1,4 +1,3 @@
-::: {align="center"}
 # DataFlow Audit
 
 ### Trustworthy data pipelines. Traceable records. Verifiable outcomes.
@@ -9,84 +8,56 @@
 ![SQLite](https://img.shields.io/badge/Database-SQLite-003B57?logo=sqlite&logoColor=white)
 ![Pytest](https://img.shields.io/badge/Tests-61%20passing-2E8B57?logo=pytest&logoColor=white)
 ![Pipeline](https://img.shields.io/badge/Pipeline-Auditable-6C63FF)
-![License](https://img.shields.io/badge/Project-Engineering%20Challenge-334155)
-:::
 
 ------------------------------------------------------------------------
 
 ## At a glance
 
-DataFlow Audit is a Python-based pipeline that ingests structured CSV
-data, validates it, transforms it into order-level facts, publishes the
-results and records how those outputs relate to their source records.
-
-It is designed around a simple principle:
+DataFlow Audit is a Python-based data engineering pipeline that ingests
+structured CSV data, validates it, transforms it into order-level facts,
+publishes the results and records how those outputs relate to their
+source records.
 
 > **A trustworthy data pipeline should explain what it processed, what
 > it rejected, what it published, and where every published record came
 > from.**
 
-  -----------------------------------------------------------------------
-  Capability                          What it provides
-  ----------------------------------- -----------------------------------
-  Data quality                        Schema, record and relationship
-                                      validation
-
-  Traceability                        Run IDs, file hashes and
-                                      source-to-output lineage
-
-  Reliability                         Idempotent publishing, retries and
-                                      checkpoint recovery
-
-  Verification                        Four reconciliation checks
-
-  Observability                       Execution history, stage logs,
-                                      counts and failure details
-  -----------------------------------------------------------------------
+| Capability    | What it provides                                          |
+|---------------|-----------------------------------------------------------|
+| Data quality  | Schema, record and relationship validation                |
+| Traceability  | Run IDs, file hashes and source-to-output lineage         |
+| Reliability   | Idempotent publishing, retries and checkpoint recovery    |
+| Verification  | Four reconciliation checks                                |
+| Observability | Execution history, stage logs, counts and failure details |
 
 ## Project results
 
 The following figures are from the project's locally recorded benchmark
 and latest verified test run.
 
-  -----------------------------------------------------------------------
-    Automated tests Largest benchmark   Published order           Lineage
-                                                  facts     relationships
-  ----------------- ----------------- ----------------- -----------------
-      **61 passed**  **180,257 rows**        **50,000**       **225,257**
+| Automated tests | Largest benchmark | Published order facts | Lineage relationships |
+|----------------:|------------------:|----------------------:|----------------------:|
+|   **61 passed** |  **180,257 rows** |            **50,000** |           **225,257** |
 
-  -----------------------------------------------------------------------
+### Performance benchmark results
 
-```{=html}
-<details>
-```
-```{=html}
-<summary>
-```
-`<strong>`{=html}Performance benchmark results`</strong>`{=html}
-```{=html}
-</summary>
-```
-  Dataset     Input rows   Execution time             Throughput
-  --------- ------------ ---------------- ----------------------
-  Small            1,807        1.459 sec   1,238.50 records/sec
-  Medium          35,801        5.003 sec   7,155.87 records/sec
-  Large          180,257       21.296 sec   8,464.53 records/sec
+| Dataset | Input rows | Execution time |           Throughput |
+|---------|-----------:|---------------:|---------------------:|
+| Small   |      1,807 |      1.459 sec | 1,238.50 records/sec |
+| Medium  |     35,801 |      5.003 sec | 7,155.87 records/sec |
+| Large   |    180,257 |     21.296 sec | 8,464.53 records/sec |
 
 Large dataset composition:
 
--   5,000 customers
--   50,000 orders
--   125,257 order items
--   50,000 published order facts
--   225,257 lineage relationships
+- 5,000 customers
+- 50,000 orders
+- 125,257 order items
+- 50,000 published order facts
+- 225,257 lineage relationships
 
 Benchmarks were measured in a local Windows development environment.
 Execution times vary by hardware and system configuration.
 
-```{=html}
-</details>
-```
 ## How it works
 
 ``` mermaid
@@ -109,34 +80,15 @@ flowchart TD
 
 ### Pipeline stages
 
-  -----------------------------------------------------------------------
-  Stage                               What happens
-  ----------------------------------- -----------------------------------
-  **1. Ingest**                       Read CSV files, capture file
-                                      metadata and calculate SHA-256
-                                      hashes
-
-  **2. Validate**                     Check schemas, required fields,
-                                      duplicate keys, data rules and
-                                      foreign keys
-
-  **3. Load**                         Load valid source records into
-                                      relational tables and record
-                                      rejected records
-
-  **4. Transform**                    Integrate customers, orders and
-                                      order items into order-level facts
-
-  **5. Publish**                      Write results using UPSERT
-                                      operations and database
-                                      transactions
-
-  **6. Trace**                        Link source records to the
-                                      published output records
-
-  **7. Reconcile**                    Verify row counts, order counts,
-                                      financial totals and lineage
-  -----------------------------------------------------------------------
+| Stage            | What happens                                                                 |
+|------------------|------------------------------------------------------------------------------|
+| **1. Ingest**    | Read CSV files, capture file metadata and calculate SHA-256 hashes           |
+| **2. Validate**  | Check schemas, required fields, duplicate keys, data rules and foreign keys  |
+| **3. Load**      | Load valid source records into relational tables and record rejected records |
+| **4. Transform** | Integrate customers, orders and order items into order-level facts           |
+| **5. Publish**   | Write results using UPSERT operations and database transactions              |
+| **6. Trace**     | Link source records to published output records                              |
+| **7. Reconcile** | Verify row counts, order counts, financial totals and lineage                |
 
 ## What makes it auditable?
 
@@ -151,29 +103,29 @@ rejected records, published counts, status and error information.
 Lineage connects the original source records to their published output
 records.
 
-  Lineage field      Meaning
-  ------------------ -------------------------------
-  Run ID             Pipeline execution identifier
-  File ID            Source file identifier
-  Source Record ID   Original source record
-  Output Table       Destination table
-  Output Record ID   Published record identifier
-  Published At       Publication timestamp
+| Lineage field    | Meaning                       |
+|------------------|-------------------------------|
+| Run ID           | Pipeline execution identifier |
+| File ID          | Source file identifier        |
+| Source Record ID | Original source record        |
+| Output Table     | Destination table             |
+| Output Record ID | Published record identifier   |
+| Published At     | Publication timestamp         |
 
-This makes it possible to trace an order fact back to its customer,
-order and order-item source records.
+This supports tracing order facts back to their source customer, order
+and order-item records.
 
 ### Reconciliation before success
 
 The pipeline performs four checks:
 
-1.  **Input row reconciliation** --- valid and rejected records account
+1.  **Input row reconciliation** — valid and rejected records account
     for input rows.
-2.  **Order count reconciliation** --- compare valid, transformed and
+2.  **Order count reconciliation** — compare valid, transformed and
     published order counts.
-3.  **Amount reconciliation** --- compare source and published financial
+3.  **Amount reconciliation** — compare source and published financial
     totals.
-4.  **Lineage reconciliation** --- compare expected and recorded lineage
+4.  **Lineage reconciliation** — compare expected and recorded lineage
     relationships.
 
 **All four checks must pass for the pipeline to be marked successful.**
@@ -188,19 +140,19 @@ support for failed publishing operations.
 
 ### Retry handling
 
--   Configurable maximum retry attempts.
--   Exponential backoff between attempts.
--   Selective exception handling.
--   Logging of retry attempts and final failures.
+- Configurable maximum retry attempts.
+- Exponential backoff between attempts.
+- Selective exception handling.
+- Logging of retry attempts and final failures.
 
 ### Checkpoint-based recovery
 
--   Persist intermediate stage outputs as local checkpoint artifacts.
--   Store checkpoint metadata in SQLite.
--   Record source manifests using SHA-256 hashes.
--   Verify artifact integrity before restoring a checkpoint.
--   Reject restoration if the source files have changed.
--   Resume supported pipeline runs that have been recorded as failed.
+- Persist intermediate stage outputs as local checkpoint artifacts.
+- Store checkpoint metadata in SQLite.
+- Record source manifests using SHA-256 hashes.
+- Verify artifact integrity before restoring a checkpoint.
+- Reject restoration if source files have changed.
+- Resume supported pipeline runs that have been recorded as failed.
 
 Checkpoint metadata is stored in `pipeline_checkpoints`; artifacts are
 stored locally under `data/checkpoints/`.
@@ -217,13 +169,13 @@ Never load checkpoint files from untrusted sources.
 
 The validation layer covers:
 
--   Missing required fields and columns.
--   Unexpected columns and schema drift.
--   Duplicate primary keys.
--   Invalid email formats.
--   Invalid foreign-key references.
--   Invalid quantities and prices.
--   Missing, empty and malformed CSV files.
+- Missing required fields and columns.
+- Unexpected columns and schema drift.
+- Duplicate primary keys.
+- Invalid email formats.
+- Invalid foreign-key references.
+- Invalid quantities and prices.
+- Missing, empty and malformed CSV files.
 
 Invalid records are captured with source information and rejection
 reasons. The pipeline can continue processing valid records where
@@ -234,47 +186,43 @@ supported by the validation flow.
 SQLite stores business data, published outputs and pipeline audit
 information.
 
-  Business tables          Purpose
-  ------------------------ --------------------------------
-  `customers`              Customer information
-  `orders`                 Order information
-  `order_items`            Individual order items
-  `order_facts`            Consolidated order-level facts
-  `order_status_history`   Order status history
+### Business tables
 
-  -----------------------------------------------------------------------
-  Audit tables                        Purpose
-  ----------------------------------- -----------------------------------
-  `pipeline_runs`                     Pipeline execution history
+| Table                  | Purpose                        |
+|------------------------|--------------------------------|
+| `customers`            | Customer information           |
+| `orders`               | Order information              |
+| `order_items`          | Individual order items         |
+| `order_facts`          | Consolidated order-level facts |
+| `order_status_history` | Order status history           |
 
-  `input_files`                       Source file metadata
+### Audit tables
 
-  `transformation_logs`               Processing stage information
-
-  `rejected_records`                  Rejected records and reasons
-
-  `output_lineage`                    Source-to-output relationships
-
-  `pipeline_checkpoints`              Checkpoint metadata and recovery
-                                      information
-  -----------------------------------------------------------------------
+| Table                  | Purpose                                      |
+|------------------------|----------------------------------------------|
+| `pipeline_runs`        | Pipeline execution history                   |
+| `input_files`          | Source file metadata                         |
+| `transformation_logs`  | Processing stage information                 |
+| `rejected_records`     | Rejected records and reasons                 |
+| `output_lineage`       | Source-to-output relationships               |
+| `pipeline_checkpoints` | Checkpoint metadata and recovery information |
 
 Primary keys, foreign keys, uniqueness constraints and indexes support
 relational integrity and query efficiency.
 
 ## Technology
 
-  Technology      Role
-  --------------- -----------------------------------------
-  Python          Pipeline implementation
-  Pandas          Data manipulation and transformation
-  SQLite / SQL    Relational storage and data operations
-  Pytest          Automated tests
-  Faker / NumPy   Synthetic data generation
-  Hashlib         SHA-256 file hashing
-  Pickle          Local checkpoint artifact serialization
-  Logging         Execution and failure logging
-  Git / GitHub    Version control
+| Technology    | Role                                    |
+|---------------|-----------------------------------------|
+| Python        | Pipeline implementation                 |
+| Pandas        | Data manipulation and transformation    |
+| SQLite / SQL  | Relational storage and data operations  |
+| Pytest        | Automated tests                         |
+| Faker / NumPy | Synthetic data generation               |
+| Hashlib       | SHA-256 file hashing                    |
+| Pickle        | Local checkpoint artifact serialization |
+| Logging       | Execution and failure logging           |
+| Git / GitHub  | Version control                         |
 
 ## Quick start
 
@@ -333,12 +281,12 @@ python -m pytest -v
 
 ### Latest verified test result
 
-  Metric                   Result
-  ---------------- --------------
-  Total tests                  61
-  Passed                       61
-  Failed                        0
-  Execution time     3.81 seconds
+| Metric         |       Result |
+|----------------|-------------:|
+| Total tests    |           61 |
+| Passed         |           61 |
+| Failed         |            0 |
+| Execution time | 3.81 seconds |
 
 Verified locally using Python 3.13.7 and pytest 9.2.0 on Windows.
 
@@ -353,8 +301,7 @@ recovery.
 python benchmark.py
 ```
 
-See the [performance benchmark results](#project-results) above. Results
-are hardware-dependent.
+Benchmark results are hardware-dependent.
 
 ## Repository layout
 
@@ -416,20 +363,20 @@ may be created locally and are not necessarily tracked by Git.
 
 ## Engineering decisions
 
-  Concern                 Approach
-  ----------------------- ----------------------------------------------------------
-  Idempotency             UPSERT-based publishing
-  Data integrity          Primary and foreign keys
-  Source identification   SHA-256 file hashes
-  Transaction safety      Database transactions and rollback
-  Data quality            Validation and rejection handling
-  Observability           Run metadata, stage logs and failure details
-  Traceability            Source-to-output lineage
-  Consistency             Automated reconciliation
-  Retry                   Configurable exponential backoff
-  Recovery                Persistent checkpoints for supported failed-run recovery
-  Checkpoint integrity    SHA-256 artifact verification
-  Source consistency      Source manifest verification
+| Concern               | Approach                                                 |
+|-----------------------|----------------------------------------------------------|
+| Idempotency           | UPSERT-based publishing                                  |
+| Data integrity        | Primary and foreign keys                                 |
+| Source identification | SHA-256 file hashes                                      |
+| Transaction safety    | Database transactions and rollback                       |
+| Data quality          | Validation and rejection handling                        |
+| Observability         | Run metadata, stage logs and failure details             |
+| Traceability          | Source-to-output lineage                                 |
+| Consistency           | Automated reconciliation                                 |
+| Retry                 | Configurable exponential backoff                         |
+| Recovery              | Persistent checkpoints for supported failed-run recovery |
+| Checkpoint integrity  | SHA-256 artifact verification                            |
+| Source consistency    | Source manifest verification                             |
 
 ## AI development assistance
 
@@ -443,22 +390,17 @@ directory.
 
 Potential extensions include:
 
--   Cloud-based deployment.
--   Incremental data processing.
--   Monitoring dashboard.
--   Additional data source integrations.
--   Distributed processing for larger workloads.
--   Stronger recovery for abrupt process termination and runs left in a
-    `RUNNING` state.
-
-These are future enhancements, not completed functionality.
+- Cloud-based deployment.
+- Incremental data processing.
+- Monitoring dashboard.
+- Additional data source integrations.
+- Distributed processing for larger workloads.
+- Stronger recovery for abrupt process termination and runs left in a
+  `RUNNING` state.
 
 ------------------------------------------------------------------------
 
-::: {align="center"}
-**DataFlow Audit**
-
+**DataFlow Audit**  
 *AI Data Forward Deployed Engineer Challenge*
 
 **Make every record traceable. Make every result verifiable.**
-:::

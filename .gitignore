@@ -1,0 +1,12 @@
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.db
+*.sqlite3
+*.log
+.env
+.vscode/
+data/benchmarks/*.csv
+data/benchmarks/**/*.csv

@@ -1,0 +1,8 @@
+customer_id,customer_name,email,registration_date
+CUST00001,Aryan Maharaj,udantdewan@example.net,2024-02-09
+CUST00002,Pahal Balay,chandertejas@example.org,2024-07-15
+CUST00003,Rushil Saini,saumyamall@example.org,2024-10-21
+CUST00004,Pahal Oak,nachiket35@example.org,2024-02-06
+CUST00005,Gunbir Parmer,aishani07@example.net,2024-02-18
+CUST00001,,udantdewan@example.net,2024-02-09
+CUST00002,Pahal Balay,chandertejas@example.org,2024-07-15

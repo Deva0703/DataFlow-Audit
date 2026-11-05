@@ -221,7 +221,8 @@ def initialize_database(db_path=None):
                     run_id,
                     file_id,
                     source_record_id,
-                    output_table
+                    output_table,
+                    output_record_id
                 )
             )
         """)
@@ -246,6 +247,28 @@ def initialize_database(db_path=None):
                     REFERENCES pipeline_runs(run_id)
             )
         """)
+
+
+        # --------------------------------
+        # 11. PIPELINE CHECKPOINTS
+        # --------------------------------
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS pipeline_checkpoints (
+                run_id TEXT NOT NULL,
+                stage_name TEXT NOT NULL,
+                artifact_path TEXT NOT NULL,
+                artifact_hash TEXT NOT NULL,
+                source_manifest TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+
+                PRIMARY KEY (run_id, stage_name),
+
+                FOREIGN KEY (run_id)
+                    REFERENCES pipeline_runs(run_id)
+            )
+        """)
+
 
         # Create useful indexes
         cursor.execute("""

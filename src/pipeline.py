@@ -1,4 +1,6 @@
+import sqlite3
 
+from src.retry import retry_operation
 import json
 import logging
 import uuid
@@ -18,6 +20,7 @@ from src.transformation import (
     convert_price_to_cents
 )
 from src.publishing import publish_order_facts
+from src.checkpoints import calculate_source_manifest
 
 
 # --------------------------------------------------
@@ -77,37 +80,81 @@ def get_current_timestamp():
 # PIPELINE RUN MANAGEMENT
 # --------------------------------------------------
 
+
 def create_pipeline_run(run_id):
-    """Create an audit record for a new pipeline execution."""
+    """Create a new run or safely resume a previously failed run."""
 
     initialize_database()
 
     with get_connection() as connection:
+        existing_run = connection.execute(
+            """
+            SELECT status
+            FROM pipeline_runs
+            WHERE run_id = ?
+            """,
+            (run_id,)
+        ).fetchone()
+
+        if existing_run is None:
+            connection.execute(
+                """
+                INSERT INTO pipeline_runs (
+                    run_id,
+                    started_at,
+                    status
+                )
+                VALUES (?, ?, ?)
+                """,
+                (
+                    run_id,
+                    get_current_timestamp(),
+                    "RUNNING"
+                )
+            )
+
+            logger.info("Pipeline run created: %s", run_id)
+            return
+
+        current_status = existing_run["status"]
+
+        if current_status == "SUCCESS":
+            raise ValueError(
+                f"Cannot resume completed pipeline run: {run_id}"
+            )
+
+        if current_status == "RUNNING":
+            raise ValueError(
+                f"Pipeline run is already marked RUNNING: {run_id}"
+            )
+
+        if current_status != "FAILED":
+            raise ValueError(
+                f"Cannot resume pipeline run with status: {current_status}"
+            )
+
         connection.execute(
             """
-            INSERT INTO pipeline_runs (
-                run_id,
-                started_at,
-                status
-            )
-            VALUES (?, ?, ?)
+            UPDATE pipeline_runs
+            SET status = 'RUNNING',
+                ended_at = NULL,
+                error_message = NULL
+            WHERE run_id = ?
             """,
-            (
-                run_id,
-                get_current_timestamp(),
-                "RUNNING"
-            )
+            (run_id,)
         )
 
-    logger.info("Pipeline run created: %s", run_id)
+    logger.info("Resuming failed pipeline run: %s", run_id)
+
 
 
 # --------------------------------------------------
 # INGESTION
 # --------------------------------------------------
 
+
 def ingest_source_files(run_id):
-    """Ingest source CSV files and record their metadata."""
+    """Ingest source CSV files and safely reuse existing file metadata."""
 
     datasets = {}
 
@@ -119,11 +166,11 @@ def ingest_source_files(run_id):
 
             dataframe, metadata = ingest_csv(file_path)
 
-            file_id = str(uuid.uuid4())
+            proposed_file_id = str(uuid.uuid4())
 
             connection.execute(
                 """
-                INSERT INTO input_files (
+                INSERT OR IGNORE INTO input_files (
                     file_id,
                     run_id,
                     file_name,
@@ -136,7 +183,7 @@ def ingest_source_files(run_id):
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    file_id,
+                    proposed_file_id,
                     run_id,
                     metadata["file_name"],
                     metadata["file_path"],
@@ -147,6 +194,22 @@ def ingest_source_files(run_id):
                 )
             )
 
+            existing_file = connection.execute(
+                """
+                SELECT file_id
+                FROM input_files
+                WHERE run_id = ? AND file_hash = ?
+                """,
+                (run_id, metadata["file_hash"])
+            ).fetchone()
+
+            if existing_file is None:
+                raise RuntimeError(
+                    f"Could not register input file: {entity}"
+                )
+
+            file_id = existing_file["file_id"]
+
             datasets[entity] = {
                 "data": dataframe,
                 "file_id": file_id,
@@ -154,12 +217,14 @@ def ingest_source_files(run_id):
             }
 
             logger.info(
-                "%s: %s rows ingested",
+                "%s: %s rows ingested (file_id=%s)",
                 entity,
-                metadata["row_count"]
+                metadata["row_count"],
+                file_id
             )
 
     return datasets
+
 
 
 # --------------------------------------------------
@@ -167,45 +232,34 @@ def ingest_source_files(run_id):
 # --------------------------------------------------
 
 def validate_source_datasets(run_id, datasets):
-    """Validate source datasets and save rejected records."""
+    """Validate source datasets and save rejected records idempotently."""
 
     validated = {}
-
     total_input_rows = 0
     total_valid_rows = 0
     total_rejected_rows = 0
 
-    validation_order = [
-        "customers",
-        "orders",
-        "order_items"
-    ]
+    validation_order = ["customers", "orders", "order_items"]
 
     with get_connection() as connection:
-
         for entity in validation_order:
-
             logger.info("Validating %s", entity)
 
             source_data = datasets[entity]["data"]
             file_id = datasets[entity]["file_id"]
-
             valid_reference_ids = None
 
             if entity == "orders":
                 valid_reference_ids = set(
                     validated["customers"]["valid"]["customer_id"]
                 )
-
             elif entity == "order_items":
                 valid_reference_ids = set(
                     validated["orders"]["valid"]["order_id"]
                 )
 
             valid, rejected = validate_records(
-                source_data,
-                entity,
-                valid_reference_ids
+                source_data, entity, valid_reference_ids
             )
 
             total_input_rows += len(source_data)
@@ -215,72 +269,57 @@ def validate_source_datasets(run_id, datasets):
             primary_key = {
                 "customers": "customer_id",
                 "orders": "order_id",
-                "order_items": "item_id"
+                "order_items": "item_id",
             }[entity]
 
             for _, row in rejected.iterrows():
-
                 raw_record = row.drop(
-                    labels=[
-                        "source_row_number",
-                        "rejection_reason"
-                    ]
+                    labels=["source_row_number", "rejection_reason"]
                 ).to_dict()
+
+                reject_id = str(uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    f"{run_id}:{file_id}:{int(row['source_row_number'])}:{row['rejection_reason']}"
+                ))
 
                 connection.execute(
                     """
-                    INSERT INTO rejected_records (
+                    INSERT OR IGNORE INTO rejected_records (
+                        reject_id, run_id, file_id, source_record_id,
+                        source_row_number, raw_record_json,
+                        rejection_reason, rejected_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
                         reject_id,
                         run_id,
                         file_id,
-                        source_record_id,
-                        source_row_number,
-                        raw_record_json,
-                        rejection_reason,
-                        rejected_at
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        str(uuid.uuid4()),
-                        run_id,
-                        file_id,
-                        str(row[primary_key])
-                        if pd.notna(row[primary_key]) else None,
+                        str(row[primary_key]) if pd.notna(row[primary_key]) else None,
                         int(row["source_row_number"]),
                         json.dumps(raw_record, default=str),
                         row["rejection_reason"],
-                        get_current_timestamp()
-                    )
+                        get_current_timestamp(),
+                    ),
                 )
 
             validated[entity] = {
                 "valid": valid,
                 "rejected": rejected,
-                "file_id": file_id
+                "file_id": file_id,
             }
 
             logger.info(
                 "%s validation: %s valid, %s rejected",
-                entity,
-                len(valid),
-                len(rejected)
+                entity, len(valid), len(rejected)
             )
 
         connection.execute(
             """
             UPDATE pipeline_runs
-            SET total_input_rows = ?,
-                valid_rows = ?,
-                rejected_rows = ?
+            SET total_input_rows = ?, valid_rows = ?, rejected_rows = ?
             WHERE run_id = ?
             """,
-            (
-                total_input_rows,
-                total_valid_rows,
-                total_rejected_rows,
-                run_id
-            )
+            (total_input_rows, total_valid_rows, total_rejected_rows, run_id),
         )
 
     return validated
@@ -446,7 +485,10 @@ def record_output_lineage(run_id, validated, order_facts):
         for file_id, source_record_id in source_links:
             lineage_records.append(
                 (
-                    str(uuid.uuid4()),
+                    str(uuid.uuid5(
+                        uuid.NAMESPACE_URL,
+                        f"{run_id}:{file_id}:{source_record_id}:order_facts:{order_id}"
+                    )),
                     run_id,
                     file_id,
                     source_record_id,
@@ -483,6 +525,7 @@ def record_output_lineage(run_id, validated, order_facts):
 
 
 
+
 def log_pipeline_step(
     run_id,
     step_name,
@@ -492,9 +535,15 @@ def log_pipeline_step(
     status="SUCCESS",
     details=None
 ):
-    """Save pipeline step execution details in SQLite."""
+    """Insert or update one audit record per pipeline stage."""
 
     ended_at = get_current_timestamp()
+
+    # Deterministic ID prevents duplicate stage logs during recovery.
+    step_id = str(uuid.uuid5(
+        uuid.NAMESPACE_URL,
+        f"{run_id}:{step_name}"
+    ))
 
     with get_connection() as connection:
         connection.execute(
@@ -511,9 +560,17 @@ def log_pipeline_step(
                 details
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+
+            ON CONFLICT(step_id) DO UPDATE SET
+                started_at = excluded.started_at,
+                ended_at = excluded.ended_at,
+                input_rows = excluded.input_rows,
+                output_rows = excluded.output_rows,
+                status = excluded.status,
+                details = excluded.details
             """,
             (
-                str(uuid.uuid4()),
+                step_id,
                 run_id,
                 step_name,
                 started_at,
@@ -574,36 +631,72 @@ def update_pipeline_run(
     )
 
 
+def get_or_create_checkpoint(run_id, stage_name, source_manifest, producer):
+    """Restore a verified checkpoint or execute and save the stage."""
+
+    from src.checkpoints import load_checkpoint, save_checkpoint
+
+    checkpoint_data = load_checkpoint(
+        run_id,
+        stage_name,
+        source_manifest
+    )
+
+    if checkpoint_data is not None:
+        logger.info("Using saved checkpoint: %s", stage_name)
+        return checkpoint_data
+
+    logger.info("Executing pipeline stage: %s", stage_name)
+
+    checkpoint_data = producer()
+
+    save_checkpoint(
+        run_id,
+        stage_name,
+        checkpoint_data,
+        source_manifest
+    )
+
+    return checkpoint_data
+
+
 # --------------------------------------------------
 # PIPELINE EXECUTION
 # --------------------------------------------------
 
 def run_pipeline(run_id=None):
+    """Execute the pipeline, restoring verified checkpoints on resume."""
 
     if run_id is None:
         run_id = generate_run_id()
 
     published_rows = 0
+    run_started = False
 
     print("\nDataFlow Audit - Pipeline")
     print("-------------------------")
     print(f"Run ID: {run_id}")
 
     try:
-
-        # 1. Create run
+        # Create a new run or transition a FAILED run back to RUNNING.
         create_pipeline_run(run_id)
+        run_started = True
 
-        # 2. Ingestion
+        # A resume is valid only for exactly the same source-file contents.
+        source_manifest = calculate_source_manifest(SOURCE_FILES)
+
+        # 1. Ingestion (checkpointed)
         ingestion_started_at = get_current_timestamp()
-
-        datasets = ingest_source_files(run_id)
-
-        ingestion_input_rows = sum(
-            result["metadata"]["row_count"]
-            for result in datasets.values()
+        datasets = get_or_create_checkpoint(
+            run_id,
+            "ingestion",
+            source_manifest,
+            lambda: ingest_source_files(run_id),
         )
 
+        ingestion_input_rows = sum(
+            result["metadata"]["row_count"] for result in datasets.values()
+        )
         log_pipeline_step(
             run_id=run_id,
             step_name="ingestion",
@@ -611,30 +704,27 @@ def run_pipeline(run_id=None):
             input_rows=ingestion_input_rows,
             output_rows=ingestion_input_rows,
             status="SUCCESS",
-            details="Successfully ingested all source CSV files."
+            details="Successfully ingested all source CSV files.",
         )
 
-        # 3. Validation
+        # 2. Validation (checkpointed; rejected-record inserts are idempotent)
         validation_started_at = get_current_timestamp()
-
-        validated = validate_source_datasets(
+        validated = get_or_create_checkpoint(
             run_id,
-            datasets
+            "validation",
+            source_manifest,
+            lambda: validate_source_datasets(run_id, datasets),
         )
 
         validation_input_rows = sum(
             len(result["valid"]) + len(result["rejected"])
             for result in validated.values()
         )
-
         validation_output_rows = sum(
-            len(result["valid"])
-            for result in validated.values()
+            len(result["valid"]) for result in validated.values()
         )
-
         validation_rejected_rows = sum(
-            len(result["rejected"])
-            for result in validated.values()
+            len(result["rejected"]) for result in validated.values()
         )
 
         log_pipeline_step(
@@ -645,35 +735,32 @@ def run_pipeline(run_id=None):
             output_rows=validation_output_rows,
             status="SUCCESS",
             details=(
-                f"Validation completed. "
-                f"Accepted: {validation_output_rows}, "
+                f"Validation completed. Accepted: {validation_output_rows}, "
                 f"Rejected: {validation_rejected_rows}"
-            )
+            ),
         )
 
         print("\nValidation completed!")
-
         for entity, result in validated.items():
             print(
-                f"{entity}: "
-                f"{len(result['valid'])} valid, "
+                f"{entity}: {len(result['valid'])} valid, "
                 f"{len(result['rejected'])} rejected"
             )
 
-        # 4. Load source tables
+        # 3. Source-table loading. UPSERTs make this stage safe to repeat.
         loading_started_at = get_current_timestamp()
-
-        loaded_counts = load_source_tables(validated)
+        loaded_counts = retry_operation(
+            lambda: load_source_tables(validated),
+            max_attempts=3,
+            initial_delay=1,
+            backoff_factor=2,
+            retry_exceptions=(sqlite3.OperationalError,),
+        )
 
         loading_input_rows = sum(
-            len(result["valid"])
-            for result in validated.values()
+            len(result["valid"]) for result in validated.values()
         )
-
-        loading_output_rows = sum(
-            loaded_counts.values()
-        )
-
+        loading_output_rows = sum(loaded_counts.values())
         log_pipeline_step(
             run_id=run_id,
             step_name="source_table_loading",
@@ -685,17 +772,20 @@ def run_pipeline(run_id=None):
                 f"Customers: {loaded_counts['customers']}, "
                 f"Orders: {loaded_counts['orders']}, "
                 f"Order items: {loaded_counts['order_items']}"
-            )
+            ),
         )
 
-        
-        # 5. Transformation
+        # 4. Transformation (checkpointed)
         transformation_started_at = get_current_timestamp()
-
-        order_facts = transform_orders(
-            validated["customers"]["valid"],
-            validated["orders"]["valid"],
-            validated["order_items"]["valid"]
+        order_facts = get_or_create_checkpoint(
+            run_id,
+            "transformation",
+            source_manifest,
+            lambda: transform_orders(
+                validated["customers"]["valid"],
+                validated["orders"]["valid"],
+                validated["order_items"]["valid"],
+            ),
         )
 
         log_pipeline_step(
@@ -705,19 +795,22 @@ def run_pipeline(run_id=None):
             input_rows=len(validated["orders"]["valid"]),
             output_rows=len(order_facts),
             status="SUCCESS",
-            details="Generated order-level facts from customers, orders and order items."
+            details="Generated order-level facts from customers, orders and order items.",
         )
 
         print("\nTransformation completed!")
         print(f"Order facts generated: {len(order_facts)}")
         print(order_facts.head())
 
-
-        # 6. Publishing
+        # 5. Publishing. UPSERT semantics plus bounded retry make this repeatable.
         publishing_started_at = get_current_timestamp()
-
-        publish_summary = publish_order_facts(order_facts)
-
+        publish_summary = retry_operation(
+            lambda: publish_order_facts(order_facts),
+            max_attempts=3,
+            initial_delay=1,
+            backoff_factor=2,
+            retry_exceptions=(sqlite3.OperationalError,),
+        )
         published_rows = publish_summary["published_rows"]
 
         log_pipeline_step(
@@ -730,36 +823,21 @@ def run_pipeline(run_id=None):
             details=(
                 f"Inserted: {publish_summary['inserted_rows']}, "
                 f"Updated: {publish_summary['updated_rows']}"
-            )
+            ),
         )
 
-        # 7. Output lineage
-        lineage_count = record_output_lineage(
-            run_id,
-            validated,
-            order_facts
-        )
-
+        # 6. Output lineage. Deterministic lineage IDs prevent duplicate links.
+        lineage_count = record_output_lineage(run_id, validated, order_facts)
         print("\nAudit lineage completed!")
-        print(
-            f"Lineage relationships recorded: "
-            f"{lineage_count}"
-        )
+        print(f"Lineage relationships recorded: {lineage_count}")
 
-        # 8. Reconcile pipeline data
+        # 7. Reconciliation
         reconciliation_started_at = get_current_timestamp()
-
-        reconciliation = run_reconciliation(
-            run_id,
-            validated,
-            order_facts
-        )
+        reconciliation = run_reconciliation(run_id, validated, order_facts)
 
         passed_checks = sum(
-            1 for check in reconciliation["checks"]
-            if check["passed"]
+            1 for check in reconciliation["checks"] if check["passed"]
         )
-
         total_checks = len(reconciliation["checks"])
 
         log_pipeline_step(
@@ -769,42 +847,38 @@ def run_pipeline(run_id=None):
             input_rows=total_checks,
             output_rows=passed_checks,
             status="SUCCESS" if reconciliation["overall_passed"] else "FAILED",
-            details=(
-                f"Passed checks: {passed_checks}/{total_checks}"
-            )
+            details=f"Passed checks: {passed_checks}/{total_checks}",
         )
 
-        # 8. Mark successful run only if reconciliation passes
         if not reconciliation["overall_passed"]:
             raise RuntimeError(
-                f"Reconciliation failed: "
-                f"{passed_checks}/{total_checks} checks passed"
+                f"Reconciliation failed: {passed_checks}/{total_checks} checks passed"
             )
 
         update_pipeline_run(
             run_id,
             status="SUCCESS",
-            published_rows=published_rows
-)
-
+            published_rows=published_rows,
+        )
         print("\nPipeline completed successfully!")
 
     except Exception as error:
-
         logger.exception("Pipeline execution failed")
 
-        try:
-            update_pipeline_run(
-                run_id,
-                status="FAILED",
-                published_rows=published_rows,
-                error_message=str(error)
-            )
-        except Exception:
-            logger.exception("Could not update failed pipeline status")
+        # Do not overwrite a pre-existing SUCCESS/FAILED/RUNNING run when
+        # create_pipeline_run itself rejects the requested run ID.
+        if run_started:
+            try:
+                update_pipeline_run(
+                    run_id,
+                    status="FAILED",
+                    published_rows=published_rows,
+                    error_message=str(error),
+                )
+            except Exception:
+                logger.exception("Could not update failed pipeline status")
 
         print(f"\nPipeline failed: {error}")
-
         raise
 
 

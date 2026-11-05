@@ -31,7 +31,8 @@ def test_database_tables_exist():
         "transformation_logs",
         "rejected_records",
         "output_lineage",
-        "order_status_history"
+        "order_status_history",
+        "pipeline_checkpoints"
     ]
 
     assert sorted(tables) == sorted(expected_tables)

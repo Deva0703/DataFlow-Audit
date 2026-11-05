@@ -10,3 +10,4 @@ __pycache__/
 .vscode/
 data/benchmarks/*.csv
 data/benchmarks/**/*.csv
+data/checkpoints/

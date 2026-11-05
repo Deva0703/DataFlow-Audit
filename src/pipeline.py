@@ -341,6 +341,7 @@ def load_source_tables(validated):
                 order_date = excluded.order_date,
                 order_status = excluded.order_status,
                 updated_at = excluded.updated_at
+            WHERE julianday(excluded.updated_at) > julianday(orders.updated_at)
             """,
             [
                 (
